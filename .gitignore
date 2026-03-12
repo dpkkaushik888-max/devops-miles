@@ -5,3 +5,8 @@ devops-miles-ssh-key
 # Terraform
 terraform/.terraform/
 terraform/.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.pyc
+.coverage
