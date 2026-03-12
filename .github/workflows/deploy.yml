@@ -257,7 +257,7 @@ jobs:
         run: |
           ansible-playbook -i inventory.ini proxmox_create_vm.yml \
             --private-key ~/.ssh/devops-miles-key \
-            --extra-vars "vm_id=100 vm_ip=192.168.100.10 vm_name=app-vm"
+            --extra-vars "vm_id=100 vm_ip=192.168.100.10 vm_name=master-vm"
 
       - name: Deploy app to production VM
         working-directory: ansible
