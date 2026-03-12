@@ -1,86 +1,54 @@
 ---
 # Proxmox VM Provisioning Playbook
 #
-# Creates an Ubuntu 22.04 VM inside Proxmox using cloud-init
-# VM IP: 192.168.100.10 on internal bridge vmbr0
+# Clones a VM from the golden template (ID 9000) and configures it
+# with cloud-init (IP, SSH key, hostname). Much faster than building
+# from scratch — provisioning takes ~30s instead of ~5 minutes.
+#
+# Requires: create_template.yml to have been run at least once.
 #
 # Usage:
-#   ansible-playbook -i inventory.ini proxmox_create_vm.yml
+#   ansible-playbook -i inventory.ini proxmox_create_vm.yml \
+#     --extra-vars "vm_id=1001 vm_ip=192.168.100.50 vm_name=branch-my-feature"
 
 - hosts: proxmox_hosts
   become: yes
   vars:
+    template_id: 9000
     vm_id: 100
-    vm_name: app-vm
+    vm_name: master-vm
     vm_ip: "192.168.100.10"
     vm_gw: "192.168.100.1"
-    vm_memory: 2048
-    vm_cores: 2
-    vm_disk: "10G"
     vm_user: ubuntu
-    cloud_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-    cloud_image_path: "/var/lib/vz/template/iso/ubuntu-22.04-cloud.img"
     ssh_pub_key: "{{ lookup('file', '../devops-miles-ssh-key.pub') }}"
 
   tasks:
-    - name: Remove Proxmox enterprise repository
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/apt/sources.list.d/pve-enterprise.list
-        - /etc/apt/sources.list.d/ceph.list
-
-    - name: Ensure no-subscription repo is present
-      copy:
-        dest: /etc/apt/sources.list.d/pve-no-subscription.list
-        content: "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n"
-
-    - name: Install required tools
-      apt:
-        name:
-          - libguestfs-tools
-          - wget
-        state: present
-        update_cache: yes
-
-    - name: Download Ubuntu 22.04 cloud image
-      get_url:
-        url: "{{ cloud_image_url }}"
-        dest: "{{ cloud_image_path }}"
-        mode: "0644"
-
-    - name: Check if VM already exists
+    - name: Check if VM {{ vm_id }} already exists
       command: qm status {{ vm_id }}
       register: vm_status
       ignore_errors: yes
+      changed_when: false
 
-    - name: Create VM
+    - name: VM {{ vm_id }} already exists — skipping clone
+      debug:
+        msg: "VM {{ vm_id }} ({{ vm_name }}) already exists. Skipping clone."
+      when: vm_status.rc == 0
+
+    - name: Verify template {{ template_id }} exists before cloning
+      command: qm status {{ template_id }}
+      register: template_check
+      when: vm_status.rc != 0
+
+    - name: Fail if template is missing
+      fail:
+        msg: "Template {{ template_id }} not found. Run create_template.yml first."
+      when: vm_status.rc != 0 and template_check.rc != 0
+
+    - name: Clone VM {{ vm_id }} from template {{ template_id }}
       command: >
-        qm create {{ vm_id }}
+        qm clone {{ template_id }} {{ vm_id }}
         --name {{ vm_name }}
-        --memory {{ vm_memory }}
-        --cores {{ vm_cores }}
-        --net0 virtio,bridge=vmbr0
-        --serial0 socket
-        --vga serial0
-        --kvm 0
-      when: vm_status.rc != 0
-
-    - name: Import cloud image disk
-      command: >
-        qm importdisk {{ vm_id }} {{ cloud_image_path }} local --format qcow2
-      when: vm_status.rc != 0
-
-    - name: Attach disk to VM
-      command: >
-        qm set {{ vm_id }}
-        --scsihw virtio-scsi-pci
-        --scsi0 local:{{ vm_id }}/vm-{{ vm_id }}-disk-0.qcow2
-      when: vm_status.rc != 0
-
-    - name: Resize disk
-      command: qm resize {{ vm_id }} scsi0 {{ vm_disk }}
+        --full
       when: vm_status.rc != 0
 
     - name: Write SSH public key to temp file
@@ -88,20 +56,18 @@
         content: "{{ ssh_pub_key }}"
         dest: /tmp/vm_ssh_key.pub
         mode: "0644"
+      when: vm_status.rc != 0
 
-    - name: Configure cloud-init drive
+    - name: Configure cloud-init on cloned VM
       command: >
         qm set {{ vm_id }}
-        --ide2 local:cloudinit
-        --boot c
-        --bootdisk scsi0
         --ciuser {{ vm_user }}
         --sshkeys /tmp/vm_ssh_key.pub
         --ipconfig0 ip={{ vm_ip }}/24,gw={{ vm_gw }}
         --nameserver 8.8.8.8
       when: vm_status.rc != 0
 
-    - name: Set up NAT for VM subnet on Proxmox host
+    - name: Ensure NAT and IP forwarding are configured on Proxmox host
       iptables:
         table: nat
         chain: POSTROUTING
@@ -109,33 +75,14 @@
         out_interface: enp7s0
         jump: MASQUERADE
 
-    - name: Enable IP forwarding on Proxmox host
+    - name: Enable IP forwarding
       sysctl:
         name: net.ipv4.ip_forward
         value: "1"
         state: present
         reload: yes
 
-    - name: Configure vmbr0 bridge with NAT gateway IP
-      blockinfile:
-        path: /etc/network/interfaces
-        block: |
-          auto vmbr0
-          iface vmbr0 inet static
-            address 192.168.100.1/24
-            bridge-ports none
-            bridge-stp off
-            bridge-fd 0
-            post-up echo 1 > /proc/sys/net/ipv4/ip_forward
-            post-up iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o enp7s0 -j MASQUERADE
-            post-down iptables -t nat -D POSTROUTING -s 192.168.100.0/24 -o enp7s0 -j MASQUERADE
-        marker: "# {mark} ANSIBLE vmbr0"
-
-    - name: Bring up vmbr0 bridge
-      command: ifup vmbr0
-      ignore_errors: yes
-
-    - name: Start VM
+    - name: Start VM {{ vm_id }}
       command: qm start {{ vm_id }}
       when: vm_status.rc != 0
 
@@ -143,9 +90,10 @@
       wait_for:
         host: "{{ vm_ip }}"
         port: 22
-        delay: 20
-        timeout: 120
+        delay: 15
+        timeout: 90
+      when: vm_status.rc != 0
 
-    - name: VM is ready
+    - name: VM {{ vm_name }} is ready
       debug:
-        msg: "VM {{ vm_name }} is up at {{ vm_ip }}"
+        msg: "VM {{ vm_id }} ({{ vm_name }}) is up at {{ vm_ip }}"

@@ -5,6 +5,15 @@ on:
     branches:
       - "**"
   delete:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to run'
+        required: true
+        default: 'create-template'
+        type: choice
+        options:
+          - create-template
 
 env:
   BASTION_HOST: 178.104.26.115
@@ -17,6 +26,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 0: Create Template — manual trigger only
+  # Run once (or when base image needs rebuilding).
+  # Creates golden Ubuntu 22.04 template (VM 9000) on Proxmox.
+  # All branch and production VMs are cloned from this template.
+  # ──────────────────────────────────────────────────────────
+  create-template:
+    name: Create Golden VM Template
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'create-template'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
+          chmod 600 ~/.ssh/devops-miles-key
+          cat > ~/.ssh/config << EOF
+          Host ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p ${{ env.BASTION_HOST }}
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Create golden VM template on Proxmox
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini create_template.yml \
+            --private-key ~/.ssh/devops-miles-key
+
+      - name: Write summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Golden VM Template Ready
+
+          | Field       | Value |
+          |-------------|-------|
+          | Template ID | \`9000\` |
+          | Name        | \`ubuntu-22.04-template\` |
+          | Base Image  | Ubuntu 22.04 LTS cloud image |
+
+          Branch and production VMs will now clone from this template.
+          EOF
 
   # ──────────────────────────────────────────────────────────
   # JOB 1: Branch Deploy — triggered on push to any non-master branch

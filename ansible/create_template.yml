@@ -1,0 +1,109 @@
+---
+# Proxmox Golden Template Playbook
+#
+# Run ONCE to create a reusable Ubuntu 22.04 cloud-init template (VM ID 9000).
+# All branch and production VMs are cloned from this template, cutting
+# provisioning time from ~5 min to ~30 seconds.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini create_template.yml
+#
+# Safe to re-run: skips all steps if template 9000 already exists.
+
+- hosts: proxmox_hosts
+  become: yes
+  vars:
+    template_id: 9000
+    template_name: ubuntu-22.04-template
+    cloud_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    cloud_image_path: "/var/lib/vz/template/iso/ubuntu-22.04-cloud.img"
+    vm_memory: 2048
+    vm_cores: 2
+    vm_disk: "10G"
+    vm_user: ubuntu
+
+  tasks:
+    - name: Check if template {{ template_id }} already exists
+      command: qm status {{ template_id }}
+      register: template_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Template already exists — skipping creation
+      debug:
+        msg: "Template {{ template_id }} ({{ template_name }}) already exists. Nothing to do."
+      when: template_status.rc == 0
+
+    # ── Everything below only runs if template does not exist ──
+
+    - name: Ensure required tools are installed
+      apt:
+        name:
+          - libguestfs-tools
+          - wget
+        state: present
+        update_cache: yes
+      when: template_status.rc != 0
+
+    - name: Download Ubuntu 22.04 cloud image
+      get_url:
+        url: "{{ cloud_image_url }}"
+        dest: "{{ cloud_image_path }}"
+        mode: "0644"
+        checksum: "sha256:https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS"
+      when: template_status.rc != 0
+
+    - name: Install qemu-guest-agent into cloud image
+      command: >
+        virt-customize -a {{ cloud_image_path }}
+        --install qemu-guest-agent
+        --run-command 'systemctl enable qemu-guest-agent'
+      when: template_status.rc != 0
+
+    - name: Create base VM for template
+      command: >
+        qm create {{ template_id }}
+        --name {{ template_name }}
+        --memory {{ vm_memory }}
+        --cores {{ vm_cores }}
+        --net0 virtio,bridge=vmbr0
+        --serial0 socket
+        --vga serial0
+        --agent enabled=1
+        --kvm 0
+      when: template_status.rc != 0
+
+    - name: Import cloud image disk into template VM
+      command: >
+        qm importdisk {{ template_id }} {{ cloud_image_path }} local --format qcow2
+      when: template_status.rc != 0
+
+    - name: Attach disk to template VM
+      command: >
+        qm set {{ template_id }}
+        --scsihw virtio-scsi-pci
+        --scsi0 local:{{ template_id }}/vm-{{ template_id }}-disk-0.qcow2
+      when: template_status.rc != 0
+
+    - name: Resize template disk
+      command: qm resize {{ template_id }} scsi0 {{ vm_disk }}
+      when: template_status.rc != 0
+
+    - name: Attach cloud-init drive to template VM
+      command: >
+        qm set {{ template_id }}
+        --ide2 local:cloudinit
+        --boot c
+        --bootdisk scsi0
+        --ciuser {{ vm_user }}
+        --nameserver 8.8.8.8
+      when: template_status.rc != 0
+
+    - name: Convert VM to template
+      command: qm template {{ template_id }}
+      when: template_status.rc != 0
+
+    - name: Template created successfully
+      debug:
+        msg: "Template {{ template_id }} ({{ template_name }}) is ready. Branch VMs can now be cloned from it."
+      when: template_status.rc != 0
