@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 import sqlite3
 
 app = Flask(__name__)
@@ -25,6 +25,16 @@ def index():
         </form>
         {% if greeting %}<h2>{{ greeting }}</h2>{% endif %}
     ''', greeting=greeting)
+
+@app.route('/healthz')
+def healthz():
+    try:
+        conn = get_db()
+        conn.execute('SELECT 1')
+        conn.close()
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "detail": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
