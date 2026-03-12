@@ -1,0 +1,39 @@
+---
+# Post-destroy validation playbook
+#
+# Verifies that a specific VM has been fully removed from Proxmox.
+# Run after destroy_vm.yml to confirm no leftover resources remain.
+# Fails loudly if the VM still exists so the CI job catches it.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini validate_cleanup.yml --extra-vars "vm_id=1234"
+
+- hosts: proxmox_hosts
+  become: yes
+  vars:
+    vm_id: ~
+
+  tasks:
+    - name: Confirm vm_id was provided
+      fail:
+        msg: "vm_id must be provided. Use --extra-vars 'vm_id=<ID>'"
+      when: vm_id is none or vm_id == ""
+
+    - name: Check if VM {{ vm_id }} still exists
+      command: qm status {{ vm_id }}
+      register: vm_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: FAIL — VM {{ vm_id }} still exists after destroy
+      fail:
+        msg: >
+          VM {{ vm_id }} still exists on Proxmox (status: {{ vm_check.stdout | trim }}).
+          The destroy step may have failed silently. Investigate and manually run:
+            qm destroy {{ vm_id }} --purge
+      when: vm_check.rc == 0
+
+    - name: PASS — VM {{ vm_id }} confirmed destroyed
+      debug:
+        msg: "Validation passed: VM {{ vm_id }} is not present on Proxmox. No leftover resources."
+      when: vm_check.rc != 0

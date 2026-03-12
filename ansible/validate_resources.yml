@@ -1,0 +1,86 @@
+---
+# Resource audit playbook
+#
+# Audits all VMs on the Proxmox host and reports any orphaned branch VMs
+# (IDs 1001–8999) that should have been destroyed when their branches were deleted.
+#
+# Expected VMs that are always allowed:
+#   ID 9000  — golden template (debian-12-app-template)
+#   ID 100   — production VM  (master-vm)
+#
+# Any other VM in range 1001–8999 is considered an orphan.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini validate_resources.yml
+#
+# Exit codes:
+#   0 — all clear, no orphans
+#   non-zero — orphaned VMs found (task fails)
+
+- hosts: proxmox_hosts
+  become: yes
+
+  tasks:
+    - name: List all VMs on Proxmox
+      command: qm list
+      register: vm_list_raw
+      changed_when: false
+
+    - name: Extract VM IDs from qm list output
+      set_fact:
+        all_vm_ids: >-
+          {{ vm_list_raw.stdout_lines[1:]
+             | map('split')
+             | map('first')
+             | map('int')
+             | list }}
+
+    - name: Show all VMs currently on Proxmox
+      debug:
+        msg: "All VM IDs on Proxmox: {{ all_vm_ids }}"
+
+    - name: Identify orphaned branch VMs (IDs 1001–8999)
+      set_fact:
+        orphaned_vms: "{{ all_vm_ids | select('ge', 1001) | select('le', 8999) | list }}"
+
+    - name: Check expected VMs are present
+      set_fact:
+        missing_expected: >-
+          {{ [100, 9000] | reject('in', all_vm_ids) | list }}
+
+    - name: WARN — expected VMs missing
+      debug:
+        msg: >
+          WARNING: Expected VM(s) not found: {{ missing_expected }}.
+          Production VM (100) or template (9000) may be down or not yet created.
+      when: missing_expected | length > 0
+
+    - name: PASS — all expected VMs present
+      debug:
+        msg: "Expected VMs confirmed present: production (100) and template (9000)."
+      when: missing_expected | length == 0
+
+    - name: Report orphaned branch VMs
+      debug:
+        msg: >
+          ORPHANED VMs found: {{ orphaned_vms }}.
+          These VMs are in the branch range (1001–8999) but have no active branch.
+          Run destroy_vm.yml for each ID to clean up:
+            {% for vid in orphaned_vms %}
+            ansible-playbook -i inventory.ini destroy_vm.yml --extra-vars "vm_id={{ vid }}"
+            {% endfor %}
+      when: orphaned_vms | length > 0
+
+    - name: FAIL — orphaned branch VMs detected
+      fail:
+        msg: >
+          Resource validation failed: {{ orphaned_vms | length }} orphaned VM(s) found:
+          {{ orphaned_vms }}. Clean up manually or re-trigger branch cleanup.
+      when: orphaned_vms | length > 0
+
+    - name: PASS — no orphaned resources
+      debug:
+        msg: >
+          Resource validation passed. No orphaned branch VMs found.
+          Active VMs: {{ all_vm_ids }}
+      when: orphaned_vms | length == 0

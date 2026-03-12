@@ -307,6 +307,13 @@ jobs:
             --private-key ~/.ssh/devops-miles-key \
             --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}"
 
+      - name: Validate VM was destroyed
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini validate_cleanup.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}"
+
       - name: Write cleanup summary
         run: |
           cat >> $GITHUB_STEP_SUMMARY << EOF

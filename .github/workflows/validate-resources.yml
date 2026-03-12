@@ -1,0 +1,85 @@
+name: Validate Proxmox Resources
+
+# Audits all VMs on Proxmox daily and on demand.
+# Fails if any orphaned branch VMs (IDs 1001–8999) are found that
+# should have been cleaned up when their branches were deleted.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC every day
+  workflow_dispatch:
+
+env:
+  BASTION_HOST: 178.104.26.115
+  PROXMOX_HOST: 10.2.0.2
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+
+jobs:
+
+  validate-resources:
+    name: Audit Proxmox VM Resources
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
+          chmod 600 ~/.ssh/devops-miles-key
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Audit Proxmox VM resources
+        id: audit
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini validate_resources.yml \
+            --private-key ~/.ssh/devops-miles-key 2>&1 | tee /tmp/audit_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Write audit summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ### Proxmox Resource Audit
+
+          EOF
+          if grep -q "PASS — no orphaned" /tmp/audit_output.txt 2>/dev/null; then
+            echo "**Result: PASS** — No orphaned branch VMs found." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Result: FAIL** — Orphaned VMs detected. See job logs for details and cleanup commands." >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| VM | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----|--------|" >> $GITHUB_STEP_SUMMARY
+          grep -E "VM IDs on Proxmox|orphaned|PASS|FAIL" /tmp/audit_output.txt 2>/dev/null \
+            | sed 's/^/| /' | sed 's/$/ |/' >> $GITHUB_STEP_SUMMARY || true
