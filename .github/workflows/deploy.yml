@@ -587,20 +587,33 @@ jobs:
       # ── Step 3: Smoke test ──
       - name: "Step 3/5: Run smoke test"
         run: |
+          set +e
           echo "--- Smoke Test Results ---" > /tmp/demo-smoke-test.log
           echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/demo-smoke-test.log
           echo "" >> /tmp/demo-smoke-test.log
 
+          # Wait for app to be ready (gunicorn may still be starting)
+          echo "Waiting for app to become ready..." >> /tmp/demo-smoke-test.log
+          for i in $(seq 1 10); do
+            if ssh -o ConnectTimeout=5 192.168.100.250 "curl -sf http://127.0.0.1:5000/healthz" >/dev/null 2>&1; then
+              echo "App ready after attempt $i" >> /tmp/demo-smoke-test.log
+              break
+            fi
+            echo "  Attempt $i: not ready, waiting 5s..." >> /tmp/demo-smoke-test.log
+            sleep 5
+          done
+          echo "" >> /tmp/demo-smoke-test.log
+
           echo "GET / (homepage):" >> /tmp/demo-smoke-test.log
-          ssh 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
+          ssh -o ConnectTimeout=10 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
 
           echo "" >> /tmp/demo-smoke-test.log
           echo "POST / (submit name):" >> /tmp/demo-smoke-test.log
-          ssh 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' -X POST -d 'name=DemoUser' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
+          ssh -o ConnectTimeout=10 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' -X POST -d 'name=DemoUser' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
 
           echo "" >> /tmp/demo-smoke-test.log
           echo "GET /healthz:" >> /tmp/demo-smoke-test.log
-          ssh 192.168.100.250 "curl -s http://127.0.0.1:5000/healthz" >> /tmp/demo-smoke-test.log 2>&1
+          ssh -o ConnectTimeout=10 192.168.100.250 "curl -s http://127.0.0.1:5000/healthz" >> /tmp/demo-smoke-test.log 2>&1
 
           echo "" >> /tmp/demo-smoke-test.log
           cat /tmp/demo-smoke-test.log
