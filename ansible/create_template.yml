@@ -50,6 +50,12 @@
         update_cache: yes
       when: template_status.rc != 0
 
+    - name: Remove existing image to ensure clean state
+      file:
+        path: "{{ cloud_image_path }}"
+        state: absent
+      when: template_status.rc != 0
+
     - name: Download Debian 12 cloud image
       get_url:
         url: "{{ cloud_image_url }}"
@@ -61,10 +67,10 @@
       command: >
         virt-customize -a {{ cloud_image_path }}
         --update
-        --install qemu-guest-agent,python3,python3-pip,sqlite3
-        --run-command 'python3 -m pip install --break-system-packages flask==3.0.3'
+        --install qemu-guest-agent,python3,python3-sqlite3,sqlite3,python3-flask
         --run-command 'systemctl enable qemu-guest-agent'
-        --run-command 'mkdir -p /opt/devops-miles-app && chown debian:debian /opt/devops-miles-app'
+        --run-command 'mkdir -p /opt/devops-miles-app'
+        --run-command 'chown debian:debian /opt/devops-miles-app'
       when: template_status.rc != 0
 
     - name: Create base VM for template
