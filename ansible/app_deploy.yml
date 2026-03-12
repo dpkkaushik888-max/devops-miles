@@ -31,6 +31,12 @@
         group: "{{ app_user }}"
         mode: "0755"
 
+    - name: Install Python dependencies from requirements.txt
+      pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        executable: pip3
+        extra_args: "--break-system-packages"
+
     - name: Run DB migrations
       command: python3 {{ app_dir }}/migrate.py
       args:
@@ -48,7 +54,7 @@
           [Service]
           User={{ app_user }}
           WorkingDirectory={{ app_dir }}
-          ExecStart=/usr/bin/gunicorn -w 2 -b 0.0.0.0:5000 --chdir {{ app_dir }} app:app
+          ExecStart=/usr/bin/python3 -m gunicorn -w 2 -b 0.0.0.0:5000 --chdir {{ app_dir }} app:app
           Restart=always
           RestartSec=5
 
