@@ -36,33 +36,54 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ansible
 
-      - name: Write SSH private key
+      - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
-          ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host proxmox
+            HostName ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+
+          Host 192.168.100.*
+            User ubuntu
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p proxmox
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
       - name: Compute branch VM parameters
         id: vm_params
         run: |
           BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          # Deterministic VM ID from branch name hash (range 1001–8999, avoiding prod VM 100)
           BRANCH_HASH=$(echo -n "$BRANCH_NAME" | cksum | awk '{print $1}')
           VM_ID=$((1001 + (BRANCH_HASH % 7999)))
-          # Deterministic IP in 192.168.100.20–254 range (avoiding prod .10)
           VM_IP="192.168.100.$((20 + (BRANCH_HASH % 235)))"
-          # Sanitized branch name for VM name (lowercase, slashes → dashes, max 20 chars)
           VM_NAME="branch-$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]' | tr '/_' '--' | cut -c1-20 | sed 's/-*$//')"
           echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
           echo "vm_ip=${VM_IP}"     >> $GITHUB_OUTPUT
           echo "vm_name=${VM_NAME}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
-
-      - name: Verify bastion is reachable
-        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
       - name: Create branch VM in Proxmox
         working-directory: ansible
@@ -77,10 +98,7 @@ jobs:
         run: |
           cat > /tmp/branch_inventory.ini << EOF
           [app_vm]
-          branch_app ansible_host=${{ steps.vm_params.outputs.vm_ip }} \
-            ansible_user=ubuntu \
-            ansible_ssh_private_key_file=~/.ssh/devops-miles-key \
-            ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ProxyJump="root@${{ env.BASTION_HOST }},root@${{ env.PROXMOX_HOST }}"'
+          branch_app ansible_host=${{ steps.vm_params.outputs.vm_ip }} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/devops-miles-key
           EOF
 
       - name: Deploy app to branch VM
@@ -127,13 +145,34 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ansible
 
-      - name: Write SSH private key
+      - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host proxmox
+            HostName ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
       - name: Compute branch VM ID
         id: vm_params
@@ -143,9 +182,6 @@ jobs:
           VM_ID=$((1001 + (BRANCH_HASH % 7999)))
           echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
-
-      - name: Verify bastion is reachable
-        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
       - name: Destroy branch VM
         working-directory: ansible
@@ -183,14 +219,38 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ansible
 
-      - name: Write SSH private key
+      - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
-          ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host proxmox
+            HostName ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+
+          Host 192.168.100.*
+            User ubuntu
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p proxmox
+          EOF
+          chmod 600 ~/.ssh/config
 
       - name: Verify bastion is reachable
         run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22

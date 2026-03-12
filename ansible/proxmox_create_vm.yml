@@ -10,7 +10,6 @@
 - hosts: proxmox_hosts
   become: yes
   vars:
-    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyCommand="ssh -W %h:%p -i ~/.ssh/devops-miles-key -o StrictHostKeyChecking=no root@178.104.26.115"'
     vm_id: 100
     vm_name: app-vm
     vm_ip: "192.168.100.10"
