@@ -6,7 +6,7 @@
 # Usage:
 #   ansible-playbook -i inventory.ini destroy_vm.yml --extra-vars "vm_id=100"
 
-- hosts: proxmox
+- hosts: proxmox_hosts
   become: yes
   vars:
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyJump=root@178.104.26.115'
