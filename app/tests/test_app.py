@@ -143,3 +143,38 @@ def test_post_with_special_characters_persists_correctly(client):
     row = conn.execute('SELECT name FROM names').fetchone()
     conn.close()
     assert row[0] == name
+
+
+# ── GET /healthz ─────────────────────────────────────────────────────────────
+
+def test_healthz_returns_200(client):
+    c, _ = client
+    response = c.get('/healthz')
+    assert response.status_code == 200
+
+
+def test_healthz_returns_json(client):
+    c, _ = client
+    response = c.get('/healthz')
+    assert response.content_type == 'application/json'
+
+
+def test_healthz_status_ok_when_db_reachable(client):
+    c, _ = client
+    response = c.get('/healthz')
+    data = response.get_json()
+    assert data['status'] == 'ok'
+
+
+def test_healthz_returns_error_when_db_unavailable(client):
+    c, _ = client
+
+    def broken_db():
+        raise Exception('DB unreachable')
+
+    with patch.object(flask_app, 'get_db', broken_db):
+        response = c.get('/healthz')
+    assert response.status_code == 500
+    data = response.get_json()
+    assert data['status'] == 'error'
+    assert 'detail' in data
