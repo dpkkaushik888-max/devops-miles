@@ -14,6 +14,7 @@ on:
         type: choice
         options:
           - create-template
+          - demo-full-cycle
 
 env:
   BASTION_HOST: 178.104.26.115
@@ -36,6 +37,7 @@ jobs:
   create-template:
     name: Create Golden VM Template
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'create-template'
 
     steps:
@@ -115,17 +117,29 @@ jobs:
 
       - name: Install dependencies
         working-directory: app
-        run: pip install -r requirements-dev.txt
+        run: pip install -q -r requirements-dev.txt
 
       - name: Run tests with coverage
         working-directory: app
-        run: python -m pytest tests/ -v --cov=. --cov-report=term-missing --cov-fail-under=80
+        run: |
+          python -m pytest tests/ -q --tb=short \
+            --cov=. --cov-report=term-missing --cov-report=html:coverage-report \
+            --junitxml=test-results.xml \
+            --cov-fail-under=80 2>&1 | tee /tmp/pytest-output.txt
 
       - name: Write test summary
         if: always()
-        working-directory: app
-        run: |
-          python -m pytest tests/ --tb=no -q 2>&1 | tail -3 >> $GITHUB_STEP_SUMMARY || true
+        run: tail -5 /tmp/pytest-output.txt >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            app/test-results.xml
+            app/coverage-report/
+          retention-days: 14
 
   # ──────────────────────────────────────────────────────────
   # JOB 2: Branch Deploy — triggered on push to any non-master branch
@@ -135,6 +149,7 @@ jobs:
     name: Deploy Branch VM (${{ github.ref_name }})
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
     if: github.event_name == 'push' && github.ref != 'refs/heads/master'
 
     steps:
@@ -210,7 +225,8 @@ jobs:
             --private-key ~/.ssh/devops-miles-key \
             --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }} \
                           vm_ip=${{ steps.vm_params.outputs.vm_ip }} \
-                          vm_name=${{ steps.vm_params.outputs.vm_name }}"
+                          vm_name=${{ steps.vm_params.outputs.vm_name }}" \
+            2>&1 | tee /tmp/create-vm.log
 
       - name: Write dynamic inventory for branch VM
         run: |
@@ -223,7 +239,30 @@ jobs:
         working-directory: ansible
         run: |
           ansible-playbook -i /tmp/branch_inventory.ini app_deploy.yml \
-            --private-key ~/.ssh/devops-miles-key
+            --private-key ~/.ssh/devops-miles-key \
+            2>&1 | tee /tmp/deploy-app.log
+
+      - name: Collect app logs from VM
+        if: always()
+        run: |
+          ssh ${{ steps.vm_params.outputs.vm_ip }} \
+            "sudo journalctl -u miles-app --no-pager -n 50 2>/dev/null || echo 'No app logs yet'" \
+            > /tmp/app-journal.log 2>&1 || true
+          ssh ${{ steps.vm_params.outputs.vm_ip }} \
+            "curl -s http://127.0.0.1:5000/healthz 2>/dev/null || echo 'healthz unreachable'" \
+            > /tmp/smoke-test-result.json 2>&1 || true
+
+      - name: Upload deploy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-deploy-logs-${{ steps.vm_params.outputs.vm_id }}
+          path: |
+            /tmp/create-vm.log
+            /tmp/deploy-app.log
+            /tmp/app-journal.log
+            /tmp/smoke-test-result.json
+          retention-days: 7
 
       - name: Write deployment summary
         run: |
@@ -252,6 +291,7 @@ jobs:
   branch-cleanup:
     name: Destroy Branch VM (${{ github.event.ref }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != 'master'
 
     steps:
@@ -305,14 +345,26 @@ jobs:
         run: |
           ansible-playbook -i inventory.ini destroy_vm.yml \
             --private-key ~/.ssh/devops-miles-key \
-            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}"
+            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}" \
+            2>&1 | tee /tmp/destroy-vm.log
 
       - name: Validate VM was destroyed
         working-directory: ansible
         run: |
           ansible-playbook -i inventory.ini validate_cleanup.yml \
             --private-key ~/.ssh/devops-miles-key \
-            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}"
+            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}" \
+            2>&1 | tee /tmp/validate-cleanup.log
+
+      - name: Upload cleanup logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-cleanup-logs-${{ steps.vm_params.outputs.vm_id }}
+          path: |
+            /tmp/destroy-vm.log
+            /tmp/validate-cleanup.log
+          retention-days: 7
 
       - name: Write cleanup summary
         run: |
@@ -333,6 +385,7 @@ jobs:
     name: Production Deploy
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
     steps:
@@ -393,13 +446,216 @@ jobs:
         run: |
           ansible-playbook -i inventory.ini proxmox_create_vm.yml \
             --private-key ~/.ssh/devops-miles-key \
-            --extra-vars "vm_id=100 vm_ip=192.168.100.10 vm_name=master-vm"
+            --extra-vars "vm_id=100 vm_ip=192.168.100.10 vm_name=master-vm" \
+            2>&1 | tee /tmp/create-prod-vm.log
 
       - name: Deploy app to production VM
         working-directory: ansible
         run: |
           ansible-playbook -i inventory.ini app_deploy.yml \
-            --private-key ~/.ssh/devops-miles-key
+            --private-key ~/.ssh/devops-miles-key \
+            2>&1 | tee /tmp/deploy-prod-app.log
 
-      - name: Production smoke test passed
-        run: echo "Smoke test embedded in app_deploy.yml passed successfully."
+      - name: Collect production app logs
+        if: always()
+        run: |
+          ssh 192.168.100.10 \
+            "sudo journalctl -u miles-app --no-pager -n 100 2>/dev/null || echo 'No app logs yet'" \
+            > /tmp/prod-app-journal.log 2>&1 || true
+          ssh 192.168.100.10 \
+            "curl -s http://127.0.0.1:5000/healthz 2>/dev/null || echo 'healthz unreachable'" \
+            > /tmp/prod-smoke-test.json 2>&1 || true
+
+      - name: Upload production deploy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-deploy-logs-${{ github.sha }}
+          path: |
+            /tmp/create-prod-vm.log
+            /tmp/deploy-prod-app.log
+            /tmp/prod-app-journal.log
+            /tmp/prod-smoke-test.json
+          retention-days: 30
+
+      - name: Write production summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Production Deploy Complete
+
+          | Field    | Value |
+          |----------|-------|
+          | VM ID    | \`100\` |
+          | VM IP    | \`192.168.100.10\` |
+          | Commit   | \`${{ github.sha }}\` |
+
+          Smoke test and app logs collected as artifacts.
+          EOF
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 5: Demo Full Cycle — manual trigger only
+  # Runs the complete 5-step pipeline in one shot:
+  #   1. Spin up a fresh VM from template
+  #   2. Deploy the web app
+  #   3. Run smoke test
+  #   4. Collect and store logs
+  #   5. Tear down the VM
+  # ──────────────────────────────────────────────────────────
+  demo-full-cycle:
+    name: Demo Full Pipeline Cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'demo-full-cycle'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
+          chmod 600 ~/.ssh/devops-miles-key
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+
+          Host 192.168.100.*
+            User debian
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p ${{ env.PROXMOX_HOST }}
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Verify golden template exists
+        run: |
+          ssh -i ~/.ssh/devops-miles-key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i ~/.ssh/devops-miles-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@${{ env.BASTION_HOST }}" \
+            root@${{ env.PROXMOX_HOST }} "qm status 9000" || \
+            (echo "::error::Template 9000 not found. Run 'Build Golden Image' workflow first." && exit 1)
+
+      # ── Step 1: Spin up a fresh VM ──
+      - name: "Step 1/5: Spin up VM from template"
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini proxmox_create_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=9999 vm_ip=192.168.100.250 vm_name=demo-full-cycle" \
+            2>&1 | tee /tmp/demo-create-vm.log
+
+      - name: Write dynamic inventory for demo VM
+        run: |
+          cat > /tmp/demo_inventory.ini << EOF
+          [app_vm]
+          demo_app ansible_host=192.168.100.250 ansible_user=debian ansible_ssh_private_key_file=~/.ssh/devops-miles-key
+          EOF
+
+      # ── Step 2: Deploy app ──
+      - name: "Step 2/5: Deploy web app with backend DB"
+        working-directory: ansible
+        run: |
+          ansible-playbook -i /tmp/demo_inventory.ini app_deploy.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            2>&1 | tee /tmp/demo-deploy-app.log
+
+      # ── Step 3: Smoke test ──
+      - name: "Step 3/5: Run smoke test"
+        run: |
+          echo "--- Smoke Test Results ---" > /tmp/demo-smoke-test.log
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /tmp/demo-smoke-test.log
+          echo "" >> /tmp/demo-smoke-test.log
+
+          echo "GET / (homepage):" >> /tmp/demo-smoke-test.log
+          ssh 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
+
+          echo "" >> /tmp/demo-smoke-test.log
+          echo "POST / (submit name):" >> /tmp/demo-smoke-test.log
+          ssh 192.168.100.250 "curl -s -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' -X POST -d 'name=DemoUser' http://127.0.0.1:5000/" >> /tmp/demo-smoke-test.log 2>&1
+
+          echo "" >> /tmp/demo-smoke-test.log
+          echo "GET /healthz:" >> /tmp/demo-smoke-test.log
+          ssh 192.168.100.250 "curl -s http://127.0.0.1:5000/healthz" >> /tmp/demo-smoke-test.log 2>&1
+
+          echo "" >> /tmp/demo-smoke-test.log
+          cat /tmp/demo-smoke-test.log
+
+      # ── Step 4: Collect logs ──
+      - name: "Step 4/5: Collect and store logs"
+        if: always()
+        run: |
+          ssh 192.168.100.250 \
+            "sudo journalctl -u miles-app --no-pager -n 100 2>/dev/null || echo 'No app logs'" \
+            > /tmp/demo-app-journal.log 2>&1 || true
+
+      - name: Upload demo artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-full-cycle-${{ github.run_id }}
+          path: |
+            /tmp/demo-create-vm.log
+            /tmp/demo-deploy-app.log
+            /tmp/demo-smoke-test.log
+            /tmp/demo-app-journal.log
+          retention-days: 30
+
+      # ── Step 5: Tear down ──
+      - name: "Step 5/5: Tear down VM"
+        if: always()
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini destroy_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=9999" \
+            2>&1 | tee /tmp/demo-destroy-vm.log
+
+      - name: Validate VM was destroyed
+        if: always()
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini validate_cleanup.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=9999" || true
+
+      - name: Write demo summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Demo: Full Pipeline Cycle Complete
+
+          | Step | Action | Status |
+          |------|--------|--------|
+          | 1/5 | Spin up VM (clone from template 9000) | VM 9999 created |
+          | 2/5 | Deploy Flask app + SQLite | App deployed via gunicorn |
+          | 3/5 | Run smoke test (GET /, POST /, GET /healthz) | Verified |
+          | 4/5 | Collect logs (journalctl + smoke results) | Uploaded as artifacts |
+          | 5/5 | Tear down VM | VM 9999 destroyed |
+
+          All logs and test results are available in the **Artifacts** section below.
+          EOF

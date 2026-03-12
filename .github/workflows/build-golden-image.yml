@@ -78,7 +78,16 @@ jobs:
         working-directory: ansible
         run: |
           ansible-playbook -i inventory.ini create_template.yml \
-            --private-key ~/.ssh/devops-miles-key
+            --private-key ~/.ssh/devops-miles-key \
+            2>&1 | tee /tmp/build-golden-image.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-image-build-${{ github.sha }}
+          path: /tmp/build-golden-image.log
+          retention-days: 30
 
       - name: Write summary
         run: |

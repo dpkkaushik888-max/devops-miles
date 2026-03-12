@@ -83,3 +83,11 @@ jobs:
           echo "|----|--------|" >> $GITHUB_STEP_SUMMARY
           grep -E "VM IDs on Proxmox|orphaned|PASS|FAIL" /tmp/audit_output.txt 2>/dev/null \
             | sed 's/^/| /' | sed 's/$/ |/' >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxmox-audit-${{ github.run_id }}
+          path: /tmp/audit_output.txt
+          retention-days: 30
