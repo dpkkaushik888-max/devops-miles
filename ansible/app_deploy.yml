@@ -10,7 +10,6 @@
 - hosts: "{{ target_host | default('app_vm') }}"
   become: yes
   vars:
-    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyJump="root@178.104.26.115,root@10.2.0.2"'
     app_dir: /opt/devops-miles-app
     app_user: ubuntu
 
