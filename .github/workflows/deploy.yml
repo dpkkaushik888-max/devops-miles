@@ -52,8 +52,7 @@ jobs:
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
 
-          Host proxmox
-            HostName ${{ env.PROXMOX_HOST }}
+          Host ${{ env.PROXMOX_HOST }}
             User root
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
@@ -65,7 +64,7 @@ jobs:
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
-            ProxyCommand ssh -W %h:%p proxmox
+            ProxyCommand ssh -W %h:%p ${{ env.PROXMOX_HOST }}
           EOF
           chmod 600 ~/.ssh/config
 
@@ -161,8 +160,7 @@ jobs:
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
 
-          Host proxmox
-            HostName ${{ env.PROXMOX_HOST }}
+          Host ${{ env.PROXMOX_HOST }}
             User root
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
@@ -235,8 +233,7 @@ jobs:
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
 
-          Host proxmox
-            HostName ${{ env.PROXMOX_HOST }}
+          Host ${{ env.PROXMOX_HOST }}
             User root
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
@@ -248,7 +245,7 @@ jobs:
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
-            ProxyCommand ssh -W %h:%p proxmox
+            ProxyCommand ssh -W %h:%p ${{ env.PROXMOX_HOST }}
           EOF
           chmod 600 ~/.ssh/config
 
