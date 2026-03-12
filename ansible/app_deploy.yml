@@ -1,8 +1,9 @@
 ---
 # App Deployment Playbook
 #
-# Deploys Flask web app to the app VM inside Proxmox
-# Access via: ssh -L 5000:192.168.100.10:5000 -J root@178.104.26.115 root@10.2.0.2
+# Deploys Flask web app to a VM cloned from the Debian 12 template.
+# All dependencies (python3, flask, sqlite3) are pre-installed in the
+# template — this playbook only copies files and restarts the service.
 #
 # Usage:
 #   ansible-playbook -i inventory.ini app_deploy.yml
@@ -11,26 +12,9 @@
   become: yes
   vars:
     app_dir: /opt/devops-miles-app
-    app_user: ubuntu
+    app_user: debian
 
   tasks:
-    - name: Install Python and DB packages
-      apt:
-        name:
-          - python3
-          - python3-pip
-          - sqlite3
-        state: present
-        update_cache: yes
-
-    - name: Create app directory
-      file:
-        path: "{{ app_dir }}"
-        state: directory
-        owner: "{{ app_user }}"
-        group: "{{ app_user }}"
-        mode: "0755"
-
     - name: Copy app files
       copy:
         src: ../app/
@@ -38,11 +22,6 @@
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
         mode: "0755"
-
-    - name: Install app requirements
-      pip:
-        requirements: "{{ app_dir }}/requirements.txt"
-        executable: pip3
 
     - name: Run DB migrations
       command: python3 {{ app_dir }}/migrate.py
@@ -68,11 +47,11 @@
           [Install]
           WantedBy=multi-user.target
 
-    - name: Enable and start app service
+    - name: Enable and restart app service
       systemd:
         name: devops-miles-app
         enabled: yes
-        state: started
+        state: restarted
         daemon_reload: yes
 
     - name: Wait for app to be ready

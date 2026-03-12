@@ -1,9 +1,14 @@
 ---
 # Proxmox Golden Template Playbook
 #
-# Run ONCE to create a reusable Ubuntu 22.04 cloud-init template (VM ID 9000).
-# All branch and production VMs are cloned from this template, cutting
-# provisioning time from ~5 min to ~30 seconds.
+# Run ONCE to create a reusable Debian 12 template (VM ID 9000) with all
+# app dependencies pre-installed. Cloning from this template cuts VM
+# provisioning from ~5 min to ~30 seconds and deploy to just file copy + restart.
+#
+# Base OS: Debian 12 (Bookworm) — lighter than Ubuntu (~300MB vs ~500MB),
+#          same apt/systemd ecosystem, consistent with Proxmox host OS.
+#
+# Pre-baked dependencies: python3, python3-pip, sqlite3, flask, qemu-guest-agent
 #
 # Usage:
 #   ansible-playbook -i inventory.ini create_template.yml
@@ -14,13 +19,13 @@
   become: yes
   vars:
     template_id: 9000
-    template_name: ubuntu-22.04-template
-    cloud_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-    cloud_image_path: "/var/lib/vz/template/iso/ubuntu-22.04-cloud.img"
+    template_name: debian-12-app-template
+    cloud_image_url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+    cloud_image_path: "/var/lib/vz/template/iso/debian-12-generic-amd64.qcow2"
     vm_memory: 2048
     vm_cores: 2
     vm_disk: "10G"
-    vm_user: ubuntu
+    vm_user: debian
 
   tasks:
     - name: Check if template {{ template_id }} already exists
@@ -45,19 +50,23 @@
         update_cache: yes
       when: template_status.rc != 0
 
-    - name: Download Ubuntu 22.04 cloud image
+    - name: Download Debian 12 cloud image
       get_url:
         url: "{{ cloud_image_url }}"
         dest: "{{ cloud_image_path }}"
         mode: "0644"
-        checksum: "sha256:https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS"
       when: template_status.rc != 0
 
-    - name: Install qemu-guest-agent into cloud image
+    - name: Bake app dependencies into image
       command: >
         virt-customize -a {{ cloud_image_path }}
-        --install qemu-guest-agent
+        --update
+        --install qemu-guest-agent,python3,python3-pip,sqlite3
+        --run-command 'pip3 install --break-system-packages flask==3.0.3'
         --run-command 'systemctl enable qemu-guest-agent'
+        --run-command 'mkdir -p /opt/devops-miles-app'
+        --run-command 'id -u debian &>/dev/null || useradd -m -s /bin/bash debian'
+        --run-command 'chown debian:debian /opt/devops-miles-app'
       when: template_status.rc != 0
 
     - name: Create base VM for template
@@ -105,5 +114,5 @@
 
     - name: Template created successfully
       debug:
-        msg: "Template {{ template_id }} ({{ template_name }}) is ready. Branch VMs can now be cloned from it."
+        msg: "Template {{ template_id }} ({{ template_name }}) is ready. Python3 + Flask + sqlite3 pre-installed."
       when: template_status.rc != 0
