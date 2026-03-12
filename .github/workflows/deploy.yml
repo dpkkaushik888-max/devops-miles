@@ -170,7 +170,7 @@ jobs:
             ProxyCommand ssh -W %h:%p bastion
 
           Host 192.168.100.*
-            User ubuntu
+            User debian
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
@@ -216,7 +216,7 @@ jobs:
         run: |
           cat > /tmp/branch_inventory.ini << EOF
           [app_vm]
-          branch_app ansible_host=${{ steps.vm_params.outputs.vm_ip }} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/devops-miles-key
+          branch_app ansible_host=${{ steps.vm_params.outputs.vm_ip }} ansible_user=debian ansible_ssh_private_key_file=~/.ssh/devops-miles-key
           EOF
 
       - name: Deploy app to branch VM
@@ -361,7 +361,7 @@ jobs:
             ProxyCommand ssh -W %h:%p bastion
 
           Host 192.168.100.*
-            User ubuntu
+            User debian
             IdentityFile ~/.ssh/devops-miles-key
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
