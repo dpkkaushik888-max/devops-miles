@@ -131,9 +131,9 @@ jobs:
   # JOB 2: Branch Cleanup — triggered when any non-master branch is deleted
   # ──────────────────────────────────────────────────────────
   branch-cleanup:
-    name: Destroy Branch VM (${{ github.ref_name }})
+    name: Destroy Branch VM (${{ github.event.ref }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'delete' && github.ref != 'refs/heads/master'
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != 'master'
 
     steps:
       - name: Checkout code
@@ -175,7 +175,7 @@ jobs:
       - name: Compute branch VM ID
         id: vm_params
         run: |
-          BRANCH_NAME="${{ github.ref_name }}"
+          BRANCH_NAME="${{ github.event.ref }}"
           BRANCH_HASH=$(echo -n "$BRANCH_NAME" | cksum | awk '{print $1}')
           VM_ID=$((1001 + (BRANCH_HASH % 7999)))
           echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
