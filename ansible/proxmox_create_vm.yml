@@ -1,0 +1,152 @@
+---
+# Proxmox VM Provisioning Playbook
+#
+# Creates an Ubuntu 22.04 VM inside Proxmox using cloud-init
+# VM IP: 192.168.100.10 on internal bridge vmbr0
+#
+# Usage:
+#   ansible-playbook -i inventory.ini proxmox_create_vm.yml
+
+- hosts: proxmox
+  become: yes
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyJump=root@178.104.26.115'
+    vm_id: 100
+    vm_name: app-vm
+    vm_ip: "192.168.100.10"
+    vm_gw: "192.168.100.1"
+    vm_memory: 2048
+    vm_cores: 2
+    vm_disk: "10G"
+    vm_user: ubuntu
+    cloud_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    cloud_image_path: "/var/lib/vz/template/iso/ubuntu-22.04-cloud.img"
+    ssh_pub_key: "{{ lookup('file', '../devops-miles-ssh-key.pub') }}"
+
+  tasks:
+    - name: Remove Proxmox enterprise repository
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/pve-enterprise.list
+        - /etc/apt/sources.list.d/ceph.list
+
+    - name: Ensure no-subscription repo is present
+      copy:
+        dest: /etc/apt/sources.list.d/pve-no-subscription.list
+        content: "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n"
+
+    - name: Install required tools
+      apt:
+        name:
+          - libguestfs-tools
+          - wget
+        state: present
+        update_cache: yes
+
+    - name: Download Ubuntu 22.04 cloud image
+      get_url:
+        url: "{{ cloud_image_url }}"
+        dest: "{{ cloud_image_path }}"
+        mode: "0644"
+
+    - name: Check if VM already exists
+      command: qm status {{ vm_id }}
+      register: vm_status
+      ignore_errors: yes
+
+    - name: Create VM
+      command: >
+        qm create {{ vm_id }}
+        --name {{ vm_name }}
+        --memory {{ vm_memory }}
+        --cores {{ vm_cores }}
+        --net0 virtio,bridge=vmbr0
+        --serial0 socket
+        --vga serial0
+        --kvm 0
+      when: vm_status.rc != 0
+
+    - name: Import cloud image disk
+      command: >
+        qm importdisk {{ vm_id }} {{ cloud_image_path }} local --format qcow2
+      when: vm_status.rc != 0
+
+    - name: Attach disk to VM
+      command: >
+        qm set {{ vm_id }}
+        --scsihw virtio-scsi-pci
+        --scsi0 local:{{ vm_id }}/vm-{{ vm_id }}-disk-0.qcow2
+      when: vm_status.rc != 0
+
+    - name: Resize disk
+      command: qm resize {{ vm_id }} scsi0 {{ vm_disk }}
+      when: vm_status.rc != 0
+
+    - name: Write SSH public key to temp file
+      copy:
+        content: "{{ ssh_pub_key }}"
+        dest: /tmp/vm_ssh_key.pub
+        mode: "0644"
+
+    - name: Configure cloud-init drive
+      command: >
+        qm set {{ vm_id }}
+        --ide2 local:cloudinit
+        --boot c
+        --bootdisk scsi0
+        --ciuser {{ vm_user }}
+        --sshkeys /tmp/vm_ssh_key.pub
+        --ipconfig0 ip={{ vm_ip }}/24,gw={{ vm_gw }}
+        --nameserver 8.8.8.8
+      when: vm_status.rc != 0
+
+    - name: Set up NAT for VM subnet on Proxmox host
+      iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "192.168.100.0/24"
+        out_interface: enp7s0
+        jump: MASQUERADE
+
+    - name: Enable IP forwarding on Proxmox host
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        reload: yes
+
+    - name: Configure vmbr0 bridge with NAT gateway IP
+      blockinfile:
+        path: /etc/network/interfaces
+        block: |
+          auto vmbr0
+          iface vmbr0 inet static
+            address 192.168.100.1/24
+            bridge-ports none
+            bridge-stp off
+            bridge-fd 0
+            post-up echo 1 > /proc/sys/net/ipv4/ip_forward
+            post-up iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o enp7s0 -j MASQUERADE
+            post-down iptables -t nat -D POSTROUTING -s 192.168.100.0/24 -o enp7s0 -j MASQUERADE
+        marker: "# {mark} ANSIBLE vmbr0"
+
+    - name: Bring up vmbr0 bridge
+      command: ifup vmbr0
+      ignore_errors: yes
+
+    - name: Start VM
+      command: qm start {{ vm_id }}
+      when: vm_status.rc != 0
+
+    - name: Wait for VM SSH to become available
+      wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 20
+        timeout: 120
+
+    - name: VM is ready
+      debug:
+        msg: "VM {{ vm_name }} is up at {{ vm_ip }}"

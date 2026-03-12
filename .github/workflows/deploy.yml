@@ -1,0 +1,206 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - "**"
+  delete:
+
+env:
+  BASTION_HOST: 178.104.26.115
+  PROXMOX_HOST: 10.2.0.2
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+
+# Serialize all Proxmox operations to avoid race conditions
+concurrency:
+  group: proxmox-operations
+  cancel-in-progress: false
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 1: Branch Deploy — triggered on push to any non-master branch
+  # Creates a preview VM per branch (idempotent: skips if VM already exists)
+  # ──────────────────────────────────────────────────────────
+  branch-deploy:
+    name: Deploy Branch VM (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref != 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Write SSH private key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/devops-miles-key
+          chmod 600 ~/.ssh/devops-miles-key
+          ssh-keygen -y -f ~/.ssh/devops-miles-key > devops-miles-ssh-key.pub
+          ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Compute branch VM parameters
+        id: vm_params
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          # Deterministic VM ID from branch name hash (range 1001–8999, avoiding prod VM 100)
+          BRANCH_HASH=$(echo -n "$BRANCH_NAME" | cksum | awk '{print $1}')
+          VM_ID=$((1001 + (BRANCH_HASH % 7999)))
+          # Deterministic IP in 192.168.100.20–254 range (avoiding prod .10)
+          VM_IP="192.168.100.$((20 + (BRANCH_HASH % 235)))"
+          # Sanitized branch name for VM name (lowercase, slashes → dashes, max 20 chars)
+          VM_NAME="branch-$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]' | tr '/_' '--' | cut -c1-20 | sed 's/-*$//')"
+          echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
+          echo "vm_ip=${VM_IP}"     >> $GITHUB_OUTPUT
+          echo "vm_name=${VM_NAME}" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create branch VM in Proxmox
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini proxmox_create_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }} \
+                          vm_ip=${{ steps.vm_params.outputs.vm_ip }} \
+                          vm_name=${{ steps.vm_params.outputs.vm_name }}"
+
+      - name: Write dynamic inventory for branch VM
+        run: |
+          cat > /tmp/branch_inventory.ini << EOF
+          [app_vm]
+          branch_app ansible_host=${{ steps.vm_params.outputs.vm_ip }} \
+            ansible_user=ubuntu \
+            ansible_ssh_private_key_file=~/.ssh/devops-miles-key \
+            ansible_ssh_common_args='-o StrictHostKeyChecking=no -o ProxyJump="root@${{ env.BASTION_HOST }},root@${{ env.PROXMOX_HOST }}"'
+          EOF
+
+      - name: Deploy app to branch VM
+        working-directory: ansible
+        run: |
+          ansible-playbook -i /tmp/branch_inventory.ini app_deploy.yml \
+            --private-key ~/.ssh/devops-miles-key
+
+      - name: Write deployment summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Branch Preview Deployment Ready
+
+          | Field    | Value |
+          |----------|-------|
+          | Branch   | \`${{ steps.vm_params.outputs.branch }}\` |
+          | VM ID    | \`${{ steps.vm_params.outputs.vm_id }}\` |
+          | VM IP    | \`${{ steps.vm_params.outputs.vm_ip }}\` |
+          | VM Name  | \`${{ steps.vm_params.outputs.vm_name }}\` |
+
+          **Access the app via SSH tunnel:**
+          \`\`\`bash
+          ssh -i devops-miles-ssh-key -L 5000:${{ steps.vm_params.outputs.vm_ip }}:5000 -J root@${{ env.BASTION_HOST }} -N root@${{ env.PROXMOX_HOST }}
+          \`\`\`
+          Then open: http://localhost:5000
+
+          _This VM will be destroyed automatically when the branch is deleted._
+          EOF
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 2: Branch Cleanup — triggered when any non-master branch is deleted
+  # ──────────────────────────────────────────────────────────
+  branch-cleanup:
+    name: Destroy Branch VM (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    if: github.event_name == 'delete' && github.ref != 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Write SSH private key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/devops-miles-key
+          chmod 600 ~/.ssh/devops-miles-key
+
+      - name: Compute branch VM ID
+        id: vm_params
+        run: |
+          BRANCH_NAME="${{ github.ref_name }}"
+          BRANCH_HASH=$(echo -n "$BRANCH_NAME" | cksum | awk '{print $1}')
+          VM_ID=$((1001 + (BRANCH_HASH % 7999)))
+          echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Destroy branch VM
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini destroy_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=${{ steps.vm_params.outputs.vm_id }}"
+
+      - name: Write cleanup summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Branch VM Destroyed
+
+          | Field  | Value |
+          |--------|-------|
+          | Branch | \`${{ steps.vm_params.outputs.branch }}\` |
+          | VM ID  | \`${{ steps.vm_params.outputs.vm_id }}\` |
+          EOF
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 3: Production Deploy — triggered on push to master
+  # Immutable pattern: destroy existing prod VM and recreate fresh
+  # ──────────────────────────────────────────────────────────
+  production-deploy:
+    name: Production Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Write SSH private key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/devops-miles-key
+          chmod 600 ~/.ssh/devops-miles-key
+          ssh-keygen -y -f ~/.ssh/devops-miles-key > devops-miles-ssh-key.pub
+          ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Destroy existing production VM (immutable pattern)
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini destroy_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=100"
+
+      - name: Create fresh production VM
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini proxmox_create_vm.yml \
+            --private-key ~/.ssh/devops-miles-key \
+            --extra-vars "vm_id=100 vm_ip=192.168.100.10 vm_name=app-vm"
+
+      - name: Deploy app to production VM
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini app_deploy.yml \
+            --private-key ~/.ssh/devops-miles-key
+
+      - name: Production smoke test passed
+        run: echo "Smoke test embedded in app_deploy.yml passed successfully."

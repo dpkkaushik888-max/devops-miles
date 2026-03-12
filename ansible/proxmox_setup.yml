@@ -1,0 +1,113 @@
+---
+# Proxmox VE Setup Playbook
+#
+# Prerequisites:
+#   - Target VM must run Debian 12 (Bookworm)
+#   - SSH access via bastion host at 178.104.26.115
+#
+# Usage:
+#   ansible-playbook -i inventory.ini proxmox_setup.yml
+
+- hosts: proxmox
+  become: yes
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyJump=root@178.104.26.115'
+    proxmox_hostname: "proxmox-vm-01"
+    proxmox_ip: "10.2.0.2"
+
+  tasks:
+    - name: Verify OS is Debian 12
+      assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_major_version == "12"
+        fail_msg: "Proxmox VE requires Debian 12 (Bookworm). Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Set hostname
+      hostname:
+        name: "{{ proxmox_hostname }}"
+
+    - name: Update /etc/hosts with FQDN
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "{{ proxmox_ip }} {{ proxmox_hostname }}.localdomain {{ proxmox_hostname }}"
+        state: present
+
+    - name: Add Proxmox VE GPG key
+      apt_key:
+        url: https://enterprise.proxmox.com/debian/proxmox-release-bookworm.gpg
+        keyring: /etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg
+        state: present
+
+    - name: Add Proxmox VE no-subscription repository
+      apt_repository:
+        repo: "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription"
+        filename: pve-no-subscription
+        state: present
+
+    - name: Remove enterprise repository if present
+      file:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        state: absent
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Full system upgrade
+      apt:
+        upgrade: full
+
+    - name: Install Proxmox VE
+      apt:
+        name:
+          - proxmox-ve
+          - postfix
+          - open-iscsi
+          - chrony
+        state: present
+
+    - name: Remove default Debian kernel
+      apt:
+        name:
+          - linux-image-amd64
+          - linux-image-6.1*
+        state: absent
+        purge: yes
+      ignore_errors: yes
+
+    - name: Remove os-prober (prevents incorrect boot entries)
+      apt:
+        name: os-prober
+        state: absent
+
+    - name: Update GRUB
+      command: update-grub
+
+    - name: Disable root SSH password login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin prohibit-password'
+        state: present
+      notify: Restart SSH
+
+    - name: Reboot to load Proxmox kernel
+      reboot:
+        reboot_timeout: 300
+        msg: "Rebooting to load Proxmox VE kernel"
+
+    - name: Verify Proxmox VE is running
+      command: pveversion
+      register: pve_version
+
+    - name: Print Proxmox VE version
+      debug:
+        msg: "{{ pve_version.stdout }}"
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted

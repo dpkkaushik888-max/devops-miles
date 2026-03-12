@@ -1,3 +1,7 @@
-# Ignore SSH keys for project security
+# Private key excluded — stored in GitHub secret SSH_KEY
 devops-miles-ssh-key
-devops-miles-ssh-key.pub
+.env
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl

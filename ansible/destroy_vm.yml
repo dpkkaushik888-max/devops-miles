@@ -1,0 +1,48 @@
+---
+# Destroy a Proxmox VM by ID
+#
+# Idempotent: if the VM does not exist, exits cleanly.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini destroy_vm.yml --extra-vars "vm_id=100"
+
+- hosts: proxmox
+  become: yes
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o ProxyJump=root@178.104.26.115'
+    vm_id: 100
+
+  tasks:
+    - name: Check if VM {{ vm_id }} exists
+      command: qm status {{ vm_id }}
+      register: vm_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: VM {{ vm_id }} does not exist, nothing to destroy
+      debug:
+        msg: "VM {{ vm_id }} not found. Skipping."
+      when: vm_status.rc != 0
+
+    - name: Stop VM {{ vm_id }}
+      command: qm stop {{ vm_id }}
+      when: vm_status.rc == 0
+      ignore_errors: yes
+
+    - name: Wait for VM {{ vm_id }} to stop
+      command: qm status {{ vm_id }}
+      register: vm_stop_status
+      until: "'stopped' in vm_stop_status.stdout or vm_stop_status.rc != 0"
+      retries: 12
+      delay: 5
+      when: vm_status.rc == 0
+      ignore_errors: yes
+
+    - name: Destroy VM {{ vm_id }}
+      command: qm destroy {{ vm_id }} --purge
+      when: vm_status.rc == 0
+
+    - name: VM {{ vm_id }} destroyed
+      debug:
+        msg: "VM {{ vm_id }} has been stopped and destroyed."
+      when: vm_status.rc == 0
