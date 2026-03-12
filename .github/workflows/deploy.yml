@@ -61,6 +61,9 @@ jobs:
           echo "vm_name=${VM_NAME}" >> $GITHUB_OUTPUT
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
 
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
       - name: Create branch VM in Proxmox
         working-directory: ansible
         run: |
@@ -141,6 +144,9 @@ jobs:
           echo "vm_id=${VM_ID}"     >> $GITHUB_OUTPUT
           echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
 
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
       - name: Destroy branch VM
         working-directory: ansible
         run: |
@@ -185,6 +191,9 @@ jobs:
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
           ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
       - name: Destroy existing production VM (immutable pattern)
         working-directory: ansible
