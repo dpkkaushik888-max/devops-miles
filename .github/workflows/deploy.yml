@@ -201,7 +201,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────
   # JOB 3: Production Deploy — triggered on push to master
-  # Immutable pattern: destroy existing prod VM and recreate fresh
+  # Creates VM if it doesn't exist, then redeploys app in-place
   # ──────────────────────────────────────────────────────────
   production-deploy:
     name: Production Deploy
@@ -252,14 +252,7 @@ jobs:
       - name: Verify bastion is reachable
         run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
 
-      - name: Destroy existing production VM (immutable pattern)
-        working-directory: ansible
-        run: |
-          ansible-playbook -i inventory.ini destroy_vm.yml \
-            --private-key ~/.ssh/devops-miles-key \
-            --extra-vars "vm_id=100"
-
-      - name: Create fresh production VM
+      - name: Create production VM if it does not exist
         working-directory: ansible
         run: |
           ansible-playbook -i inventory.ini proxmox_create_vm.yml \
