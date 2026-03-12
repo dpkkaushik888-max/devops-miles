@@ -88,8 +88,8 @@ jobs:
           | Field       | Value |
           |-------------|-------|
           | Template ID | \`9000\` |
-          | Name        | \`ubuntu-22.04-template\` |
-          | Base Image  | Ubuntu 22.04 LTS cloud image |
+          | Name        | \`debian-12-app-template\` |
+          | Base Image  | Debian 12 (Bookworm) cloud image |
 
           Branch and production VMs will now clone from this template.
           EOF
@@ -146,6 +146,15 @@ jobs:
 
       - name: Verify bastion is reachable
         run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Verify golden template exists on Proxmox
+        run: |
+          ssh -i ~/.ssh/devops-miles-key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i ~/.ssh/devops-miles-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@${{ env.BASTION_HOST }}" \
+            root@${{ env.PROXMOX_HOST }} "qm status 9000" || \
+            (echo "::error::Template 9000 not found on Proxmox. Push a change to app/requirements.txt or ansible/create_template.yml on master to trigger the 'Build Golden Image' workflow, or run it manually." && exit 1)
 
       - name: Compute branch VM parameters
         id: vm_params
@@ -327,6 +336,15 @@ jobs:
 
       - name: Verify bastion is reachable
         run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Verify golden template exists on Proxmox
+        run: |
+          ssh -i ~/.ssh/devops-miles-key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -i ~/.ssh/devops-miles-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p root@${{ env.BASTION_HOST }}" \
+            root@${{ env.PROXMOX_HOST }} "qm status 9000" || \
+            (echo "::error::Template 9000 not found on Proxmox. Run the 'Build Golden Image' workflow first." && exit 1)
 
       - name: Create production VM if it does not exist
         working-directory: ansible

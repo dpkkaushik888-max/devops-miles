@@ -1,0 +1,96 @@
+name: Build Golden Image
+
+# Automatically rebuilds the Debian 12 golden VM template (ID 9000) whenever
+# app dependencies or the template playbook change on master.
+# All branch and production VMs clone from this template — keeping it fresh
+# ensures new VMs always have the latest dependencies pre-baked in.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'app/requirements.txt'
+      - 'app/app.py'
+      - 'ansible/create_template.yml'
+  workflow_dispatch:
+
+env:
+  BASTION_HOST: 178.104.26.115
+  PROXMOX_HOST: 10.2.0.2
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+
+# Serialize with all other Proxmox operations to avoid race conditions
+concurrency:
+  group: proxmox-operations
+  cancel-in-progress: false
+
+jobs:
+
+  build-golden-image:
+    name: Rebuild Golden VM Template
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ansible
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
+          chmod 600 ~/.ssh/devops-miles-key
+          cat > ~/.ssh/config << EOF
+          Host bastion
+            HostName ${{ env.BASTION_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host ${{ env.PROXMOX_HOST }}
+            User root
+            IdentityFile ~/.ssh/devops-miles-key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            ProxyCommand ssh -W %h:%p bastion
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Verify bastion is reachable
+        run: nc -zv -w 5 ${{ env.BASTION_HOST }} 22
+
+      - name: Destroy existing template to force a clean rebuild
+        run: |
+          ssh ${{ env.PROXMOX_HOST }} \
+            "qm status 9000 &>/dev/null && qm destroy 9000 --purge && echo 'Old template 9000 destroyed' || echo 'Template 9000 not found — nothing to destroy'"
+
+      - name: Build golden VM template
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory.ini create_template.yml \
+            --private-key ~/.ssh/devops-miles-key
+
+      - name: Write summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ### Golden VM Template Rebuilt
+
+          | Field       | Value |
+          |-------------|-------|
+          | Template ID | \`9000\` |
+          | Name        | \`debian-12-app-template\` |
+          | Trigger     | \`${{ github.event_name }}\` |
+          | Commit      | \`${{ github.sha }}\` |
+
+          All new branch and production VMs will clone from this updated template.
+          EOF
