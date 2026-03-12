@@ -48,7 +48,7 @@
           [Service]
           User={{ app_user }}
           WorkingDirectory={{ app_dir }}
-          ExecStart=/usr/bin/python3 {{ app_dir }}/app.py
+          ExecStart=/usr/bin/gunicorn -w 2 -b 0.0.0.0:5000 --chdir {{ app_dir }} app:app
           Restart=always
           RestartSec=5
 

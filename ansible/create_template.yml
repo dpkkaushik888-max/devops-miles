@@ -67,7 +67,7 @@
       command: >
         virt-customize -a {{ cloud_image_path }}
         --update
-        --install qemu-guest-agent,python3,sqlite3,python3-flask
+        --install qemu-guest-agent,python3,sqlite3,python3-flask,gunicorn
         --run-command 'systemctl enable qemu-guest-agent'
         --run-command 'mkdir -p /opt/devops-miles-app'
       when: template_status.rc != 0
