@@ -43,7 +43,6 @@ jobs:
           mkdir -p ~/.ssh
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
-          ssh-keygen -y -f ~/.ssh/devops-miles-key > devops-miles-ssh-key.pub
           ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Compute branch VM parameters
@@ -185,7 +184,6 @@ jobs:
           mkdir -p ~/.ssh
           python3 -c "import os; k=os.environ['SSH_KEY'].replace('\r',''); k=k.replace('\\n','\n') if '\n' not in k else k; open(os.path.expanduser('~/.ssh/devops-miles-key'),'w').write(k if k.endswith('\n') else k+'\n')"
           chmod 600 ~/.ssh/devops-miles-key
-          ssh-keygen -y -f ~/.ssh/devops-miles-key > devops-miles-ssh-key.pub
           ssh-keyscan -H ${{ env.BASTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Destroy existing production VM (immutable pattern)
